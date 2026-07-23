@@ -42,7 +42,7 @@ app.use('/api/admin', adminRoutes);
 app.get('/api/categorias', authRequired, (req, res) => {
   try {
     const cats = db.prepare('SELECT * FROM categorias ORDER BY nome').all();
-    res.json(cats);
+    res.json({ sucesso: true, categorias: cats });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
@@ -51,7 +51,7 @@ app.get('/api/perfil', authRequired, (req, res) => {
     const user = db.prepare('SELECT id, nome, email, is_admin, created_at FROM usuarios WHERE id = ?').get(req.user.id);
     if (!user) return res.status(404).json({ erro: 'Usuário não encontrado' });
     const ass = db.prepare("SELECT a.*, p.nome as plano_nome, p.preco as plano_preco FROM assinaturas a JOIN planos p ON a.plano_id = p.id WHERE a.usuario_id = ? AND a.status = 'aprovado' ORDER BY a.created_at DESC LIMIT 1").get(req.user.id);
-    res.json({ ...user, assinatura: ass || null });
+    res.json({ sucesso: true, ...user, assinatura: ass || null });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 

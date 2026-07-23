@@ -50,7 +50,7 @@ router.get('/me', authRequired, (req, res) => {
       WHERE a.usuario_id = ? AND a.status = 'aprovado'
       ORDER BY a.created_at DESC LIMIT 1
     `).get(req.user.id);
-    res.json({ ...user, assinatura: assinatura || null });
+    res.json({ sucesso: true, ...user, assinatura: assinatura || null });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -65,6 +65,7 @@ router.post('/forgot', (req, res) => {
 
     if (!user) {
       return res.json({
+        sucesso: true,
         mensagem: 'Se o email existir, um link de redefinição será enviado.',
         link: null,
         token: null
@@ -82,6 +83,7 @@ router.post('/forgot', (req, res) => {
 
     // Include link in message so it appears in the app UI
     res.json({
+      sucesso: true,
       mensagem: `Link de redefinição gerado com sucesso!\n\nAcesse: ${resetUrl}\n\nO link expira em 1 hora.`,
       link: resetUrl,
       token: token
@@ -103,7 +105,7 @@ router.post('/reset', (req, res) => {
     if (!user) return res.status(400).json({ erro: 'Token inválido ou expirado. Solicite um novo link.' });
     const hash = bcrypt.hashSync(senha, 10);
     db.prepare('UPDATE usuarios SET senha = ?, reset_token = NULL, reset_expira = NULL WHERE id = ?').run(hash, user.id);
-    res.json({ mensagem: 'Senha redefinida com sucesso! Faça login com sua nova senha.' });
+    res.json({ sucesso: true, mensagem: 'Senha redefinida com sucesso! Faça login com sua nova senha.' });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }

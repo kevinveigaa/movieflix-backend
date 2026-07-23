@@ -11,12 +11,43 @@ router.use(authRequired, adminRequired);
 router.get('/stats', (req, res) => {
   try {
     const totalUsers = db.prepare('SELECT COUNT(*) as c FROM usuarios').get().c;
+    const semAssinatura = db.prepare(`
+      SELECT COUNT(*) as c FROM usuarios u
+      WHERE NOT EXISTS (
+        SELECT 1 FROM assinaturas a WHERE a.usuario_id = u.id AND a.status = 'aprovado'
+      )
+    `).get().c;
+
+    const ativas = db.prepare("SELECT COUNT(*) as c FROM assinaturas WHERE status = 'aprovado'").get().c;
+    const simples = db.prepare(
+      "SELECT COUNT(*) as c FROM assinaturas a JOIN planos p ON a.plano_id = p.id WHERE a.status = 'aprovado' AND LOWER(p.nome) = 'simples'"
+    ).get().c;
+    const comum = db.prepare(
+      "SELECT COUNT(*) as c FROM assinaturas a JOIN planos p ON a.plano_id = p.id WHERE a.status = 'aprovado' AND LOWER(p.nome) = 'comum'"
+    ).get().c;
+    const premium = db.prepare(
+      "SELECT COUNT(*) as c FROM assinaturas a JOIN planos p ON a.plano_id = p.id WHERE a.status = 'aprovado' AND LOWER(p.nome) = 'premium'"
+    ).get().c;
+
+    const receitaTotal = db.prepare(
+      "SELECT COALESCE(SUM(valor), 0) as total FROM pagamentos WHERE status = 'aprovado'"
+    ).get().total;
+    const receitaAprovados = db.prepare(
+      "SELECT COALESCE(SUM(valor), 0) as total FROM pagamentos WHERE status = 'aprovado'"
+    ).get().total;
+    const receitaPendentes = db.prepare(
+      "SELECT COALESCE(SUM(valor), 0) as total FROM pagamentos WHERE status = 'pendente'"
+    ).get().total;
+
     const totalFilmes = db.prepare('SELECT COUNT(*) as c FROM filmes').get().c;
-    const totalAssinaturas = db.prepare("SELECT COUNT(*) as c FROM assinaturas WHERE status = 'aprovado'").get().c;
-    const receitaTotal = db.prepare("SELECT COALESCE(SUM(valor), 0) as total FROM pagamentos WHERE status = 'aprovado'").get().total;
-    const categorias = db.prepare('SELECT COUNT(*) as c FROM categorias').get().c;
-    const pagamentosPendentes = db.prepare("SELECT COUNT(*) as c FROM pagamentos WHERE status = 'pendente'").get().c;
-    res.json({ totalUsers, totalFilmes, totalAssinaturas, receitaTotal, categorias, pagamentosPendentes });
+
+    res.json({
+      sucesso: true,
+      usuarios: { total: totalUsers, semAssinatura },
+      assinaturas: { ativas, simples, comum, premium },
+      receita: { total: receitaTotal, aprovados: receitaAprovados, pendentes: receitaPendentes },
+      filmes: { total: totalFilmes }
+    });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -30,7 +61,17 @@ router.get('/usuarios', (req, res) => {
         (SELECT pl.nome FROM assinaturas a JOIN planos pl ON a.plano_id = pl.id WHERE a.usuario_id = u.id AND a.status = 'aprovado' ORDER BY a.created_at DESC LIMIT 1) as plano_ativo
       FROM usuarios u ORDER BY u.created_at DESC
     `).all();
-    res.json(users);
+
+    const result = users.map(u => ({
+      nome: u.nome,
+      email: u.email,
+      assinatura_ativa: !!u.plano_ativo,
+      plano: u.plano_ativo || null,
+      role: u.is_admin ? 'admin' : 'user',
+      criado_em: u.created_at
+    }));
+
+    res.json({ sucesso: true, usuarios: result });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -40,13 +81,24 @@ router.get('/usuarios', (req, res) => {
 router.get('/assinaturas', (req, res) => {
   try {
     const assinaturas = db.prepare(`
-      SELECT a.*, u.nome as usuario_nome, u.email as usuario_email, pl.nome as plano_nome, pl.preco as plano_preco
+      SELECT a.*, u.nome as usuario_nome, u.email as usuario_email, pl.nome as plano_nome
       FROM assinaturas a
       JOIN usuarios u ON a.usuario_id = u.id
       JOIN planos pl ON a.plano_id = pl.id
       ORDER BY a.created_at DESC
     `).all();
-    res.json(assinaturas);
+
+    const result = assinaturas.map(a => ({
+      user_id: a.usuario_id,
+      usuario_nome: a.usuario_nome,
+      usuario_email: a.usuario_email,
+      plano: a.plano_nome,
+      ativa: a.status === 'aprovado',
+      data_inicio: a.created_at,
+      data_vencimento: null
+    }));
+
+    res.json({ sucesso: true, assinaturas: result });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -62,24 +114,31 @@ router.get('/pagamentos', (req, res) => {
       JOIN planos pl ON p.plano_id = pl.id
       ORDER BY p.created_at DESC
     `).all();
-    res.json(pagamentos);
+
+    const result = pagamentos.map(p => ({
+      id: p.id,
+      usuario_nome: p.usuario_nome,
+      usuario_email: p.usuario_email,
+      plano: p.plano_nome,
+      valor: p.valor,
+      status: p.status,
+      metodo: 'pix',
+      data: p.created_at
+    }));
+
+    res.json({ sucesso: true, pagamentos: result });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
 });
 
-// ── CRUD de Filmes (Admin) ──
+// ── CRUD de Filmes (Admin) ── (kept for backward compatibility)
 
 // GET /api/admin/filmes — Lista todos os filmes para gerenciamento
 router.get('/filmes', (req, res) => {
   try {
-    const filmes = db.prepare(`
-      SELECT f.*,
-        (SELECT COUNT(*) FROM assinaturas a WHERE a.usuario_id IN (SELECT id FROM usuarios) AND a.status = 'aprovado') as total_assinantes
-      FROM filmes f
-      ORDER BY f.created_at DESC
-    `).all();
-    res.json(filmes);
+    const filmes = db.prepare('SELECT * FROM filmes ORDER BY created_at DESC').all();
+    res.json({ sucesso: true, filmes });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -104,6 +163,7 @@ router.post('/filmes', (req, res) => {
       ano ? Number(ano) : null
     );
     res.status(201).json({
+      sucesso: true,
       id: result.lastInsertRowid,
       mensagem: 'Filme adicionado com sucesso'
     });
@@ -117,7 +177,7 @@ router.get('/filmes/:id', (req, res) => {
   try {
     const filme = db.prepare('SELECT * FROM filmes WHERE id = ?').get(req.params.id);
     if (!filme) return res.status(404).json({ erro: 'Filme não encontrado' });
-    res.json(filme);
+    res.json({ sucesso: true, filme });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -147,7 +207,7 @@ router.put('/filmes/:id', (req, res) => {
       req.params.id
     );
 
-    res.json({ mensagem: 'Filme atualizado com sucesso' });
+    res.json({ sucesso: true, mensagem: 'Filme atualizado com sucesso' });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -159,7 +219,7 @@ router.delete('/filmes/:id', (req, res) => {
     const filme = db.prepare('SELECT * FROM filmes WHERE id = ?').get(req.params.id);
     if (!filme) return res.status(404).json({ erro: 'Filme não encontrado' });
     db.prepare('DELETE FROM filmes WHERE id = ?').run(req.params.id);
-    res.json({ mensagem: 'Filme removido com sucesso' });
+    res.json({ sucesso: true, mensagem: 'Filme removido com sucesso' });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }

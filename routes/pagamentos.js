@@ -12,33 +12,16 @@ const MP_BASE = 'https://api.mercadopago.com';
 router.get('/planos', (req, res) => {
   try {
     const planos = db.prepare('SELECT * FROM planos ORDER BY preco').all();
-    res.json(planos);
+    // APK expects `recursos` as an array, not a comma-separated string
+    const result = planos.map(p => ({
+      ...p,
+      recursos: p.recursos ? p.recursos.split(',').map(r => r.trim()) : []
+    }));
+    res.json({ sucesso: true, planos: result });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
 });
-
-// Generate a fake PIX QR code string (for demo/testing fallback)
-function gerarPixFake(planoData, paymentId) {
-  const valor = planoData.preco.toFixed(2).replace('.', '');
-  // Standard BR Code (PIX) structure — emulation for demo
-  const pix = [
-    '000201',                            // Payload format indicator
-    '010212',                            // Static QR
-    `26360014BR.GOV.BCB.PIX0114${paymentId}`,  // Merchant account (PIX key = paymentId)
-    '52040000',                          // Merchant category code
-    '5303986',                           // Transaction currency (BRL)
-    `54${String(valor).padStart(2, '0').length.toString().padStart(2, '0')}${valor}`, // Value
-    '5802BR',                            // Country code
-    '5913MOVIEFLIX APP',                 // Merchant name
-    '6009SAOPAULO',                      // City
-    '62070503***',                       // Additional data
-    '6304'                               // CRC16 trailer (placeholder)
-  ].join('');
-  // Simple CRC16-CCITT checksum placeholder
-  const crc = '0000';
-  return pix + crc.toUpperCase();
-}
 
 // POST /api/pagamentos/criar — Cria pagamento via Mercado Pago PIX
 router.post('/criar', authRequired, async (req, res) => {
@@ -86,12 +69,12 @@ router.post('/criar', authRequired, async (req, res) => {
       console.warn('[MP] API error, using fallback:', mpDetail?.message || mpErr.message);
       // Fallback: generate local PIX data for demo/testing
       paymentId = `PAYID${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
-      qrCode = gerarPixFake(planoData, paymentId);
+      qrCode = null;
       qrCodeBase64 = null;
     }
 
     // Save payment
-    const payResult = db.prepare(`
+    db.prepare(`
       INSERT INTO pagamentos (usuario_id, plano_id, valor, status, mp_payment_id, qr_code, qr_code_base64)
       VALUES (?, ?, ?, 'pendente', ?, ?, ?)
     `).run(req.user.id, planoData.id, planoData.preco, paymentId, qrCode, qrCodeBase64);
@@ -102,13 +85,15 @@ router.post('/criar', authRequired, async (req, res) => {
       VALUES (?, ?, 'pendente', ?, ?, ?)
     `).run(req.user.id, planoData.id, paymentId, qrCode, qrCodeBase64);
 
+    // Return format the APK expects
     res.json({
+      sucesso: true,
+      linkPagamento: `https://www.mercadopago.com.br/checkout/v1/payment?pref_id=${paymentId}`,
       pagamento_id: paymentId,
       qr_code: qrCode,
       qr_code_base64: qrCodeBase64,
       valor: planoData.preco,
-      plano: planoData.nome,
-      via_mp: mpOk
+      plano: planoData.nome
     });
   } catch (e) {
     console.error('[CRIAR] Fatal:', e.message);
@@ -144,10 +129,10 @@ router.post('/confirmar', authRequired, async (req, res) => {
         db.prepare('UPDATE assinaturas SET status = ? WHERE mp_payment_id = ?')
           .run(mpStatus, payment.mp_payment_id);
 
-        return res.json({ status: mpStatus });
+        return res.json({ sucesso: true, status: mpStatus });
       } catch (mpErr) {
         console.warn('[MP] Confirm check failed:', mpErr.response?.data?.message || mpErr.message);
-        return res.json({ status: payment.status });
+        return res.json({ sucesso: true, status: payment.status });
       }
     }
 
@@ -157,7 +142,7 @@ router.post('/confirmar', authRequired, async (req, res) => {
     db.prepare('UPDATE assinaturas SET status = ? WHERE mp_payment_id = ?')
       .run('aprovado', payment.mp_payment_id);
 
-    return res.json({ status: 'aprovado' });
+    return res.json({ sucesso: true, status: 'aprovado' });
   } catch (e) {
     console.error('[CONFIRMAR] Fatal:', e.message);
     res.status(500).json({ erro: 'Erro ao confirmar pagamento.' });
@@ -167,12 +152,6 @@ router.post('/confirmar', authRequired, async (req, res) => {
 // GET /api/pagamentos/status — Status dos pagamentos do usuário
 router.get('/status', authRequired, async (req, res) => {
   try {
-    const payments = db.prepare(`
-      SELECT p.*, pl.nome as plano_nome FROM pagamentos p
-      JOIN planos pl ON p.plano_id = pl.id
-      WHERE p.usuario_id = ? ORDER BY p.created_at DESC LIMIT 5
-    `).all(req.user.id);
-
     const assinatura = db.prepare(`
       SELECT a.*, pl.nome as plano_nome, pl.preco as plano_preco, pl.descricao as plano_descricao, pl.recursos as plano_recursos
       FROM assinaturas a
@@ -181,7 +160,22 @@ router.get('/status', authRequired, async (req, res) => {
       ORDER BY a.created_at DESC LIMIT 1
     `).get(req.user.id);
 
-    res.json({ pagamentos: payments, assinatura: assinatura || null });
+    // APK expects ativa, data_inicio, data_vencimento
+    const assinaturaResult = assinatura ? {
+      ativa: assinatura.status === 'aprovado',
+      plano: assinatura.plano_nome,
+      data_inicio: assinatura.created_at,
+      data_vencimento: null, // No expiry tracking yet; could be computed if needed
+      recursos: assinatura.plano_recursos ? assinatura.plano_recursos.split(',').map(r => r.trim()) : []
+    } : null;
+
+    const payments = db.prepare(`
+      SELECT p.*, pl.nome as plano_nome FROM pagamentos p
+      JOIN planos pl ON p.plano_id = pl.id
+      WHERE p.usuario_id = ? ORDER BY p.created_at DESC LIMIT 5
+    `).all(req.user.id);
+
+    res.json({ sucesso: true, pagamentos: payments, assinatura: assinaturaResult });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
