@@ -27,11 +27,11 @@ router.post('/cadastro', (req, res) => {
 // POST /api/auth/login
 router.post('/login', (req, res) => {
   try {
-    const { email, senha } = req.body;
-    if (!email || !senha) return res.status(400).json({ erro: 'Email e senha são obrigatórios' });
+    const { email, senha } = req.body; const password = req.body.password; const senhaFinal = senha || password;
+    if (!email || !senhaFinal) return res.status(400).json({ erro: 'Email e senha são obrigatórios' });
     const user = db.prepare('SELECT * FROM usuarios WHERE email = ?').get(email);
     if (!user) return res.status(401).json({ erro: 'Email ou senha inválidos' });
-    if (!bcrypt.compareSync(senha, user.senha)) return res.status(401).json({ erro: 'Email ou senha inválidos' });
+    if (!bcrypt.compareSync(senhaFinal, user.senha)) return res.status(401).json({ erro: 'Email ou senha inválidos' });
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, usuario: { id: user.id, nome: user.nome, email: user.email, is_admin: user.is_admin } });
   } catch (e) {
