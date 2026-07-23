@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: movieflix-backend
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: free
