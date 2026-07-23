@@ -1,132 +1,156 @@
-const Database = require('better-sqlite3');
-const crypto = require('crypto');
+const initSqlJs = require('sql.js');
+const fs = require('fs');
+const path = require('path');
 
-const db = new Database('movieflix.db');
+const DB_PATH = path.join(__dirname, 'database.sqlite');
 
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+let rawDb = null;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS usuarios (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    senha TEXT NOT NULL,
-    is_admin INTEGER DEFAULT 0,
-    reset_token TEXT,
-    reset_expira TEXT,
-    created_at TEXT DEFAULT (datetime('now','localtime'))
-  );
+// Wrapper that matches better-sqlite3 API using sql.js
+const db = {
+  prepare: function(sql) {
+    const stmt = { sql, rawDb };
+    return {
+      run: function(...params) {
+        try {
+          rawDb.run(sql, params);
+          const result = rawDb.exec('SELECT last_insert_rowid() as id');
+          const lastId = result.length > 0 ? result[0].values[0][0] : 0;
+          saveToDisk();
+          return { changes: 1, lastInsertRowid: lastId };
+        } catch (e) {
+          console.error('SQL run error:', e.message);
+          throw e;
+        }
+      },
+      get: function(...params) {
+        try {
+          const result = rawDb.exec(sql, params);
+          if (result.length === 0 || result[0].values.length === 0) return undefined;
+          const cols = result[0].columns;
+          const vals = result[0].values[0];
+          const obj = {};
+          cols.forEach((c, i) => { obj[c] = vals[i]; });
+          return obj;
+        } catch (e) {
+          console.error('SQL get error:', e.message);
+          throw e;
+        }
+      },
+      all: function(...params) {
+        try {
+          const result = rawDb.exec(sql, params);
+          if (result.length === 0) return [];
+          const cols = result[0].columns;
+          return result[0].values.map(vals => {
+            const obj = {};
+            cols.forEach((c, i) => { obj[c] = vals[i]; });
+            return obj;
+          });
+        } catch (e) {
+          console.error('SQL all error:', e.message);
+          throw e;
+        }
+      }
+    };
+  },
+  exec: function(sql) {
+    rawDb.run(sql);
+    saveToDisk();
+  }
+};
 
-  CREATE TABLE IF NOT EXISTS planos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    preco REAL NOT NULL,
-    descricao TEXT,
-    recursos TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS filmes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    titulo TEXT NOT NULL,
-    descricao TEXT,
-    categoria TEXT NOT NULL,
-    url TEXT NOT NULL,
-    thumbnail_url TEXT,
-    duracao INTEGER,
-    ano INTEGER,
-    created_at TEXT DEFAULT (datetime('now','localtime'))
-  );
-
-  CREATE TABLE IF NOT EXISTS categorias (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT UNIQUE NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS assinaturas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario_id INTEGER NOT NULL,
-    plano_id INTEGER NOT NULL,
-    status TEXT DEFAULT 'pendente',
-    mp_payment_id TEXT,
-    mp_preference_id TEXT,
-    qr_code TEXT,
-    qr_code_base64 TEXT,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
-    FOREIGN KEY (plano_id) REFERENCES planos(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS pagamentos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario_id INTEGER NOT NULL,
-    assinatura_id INTEGER,
-    plano_id INTEGER NOT NULL,
-    valor REAL NOT NULL,
-    status TEXT DEFAULT 'pendente',
-    mp_payment_id TEXT,
-    mp_preference_id TEXT,
-    qr_code TEXT,
-    qr_code_base64 TEXT,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
-    FOREIGN KEY (assinatura_id) REFERENCES assinaturas(id),
-    FOREIGN KEY (plano_id) REFERENCES planos(id)
-  );
-`);
-
-// Seed admin user
-const adminEmail = 'admin@movieflix.com';
-const adminExists = db.prepare('SELECT id FROM usuarios WHERE email = ?').get(adminEmail);
-if (!adminExists) {
-  const bcrypt = require('bcryptjs');
-  const hash = bcrypt.hashSync('admin123', 10);
-  db.prepare('INSERT INTO usuarios (nome, email, senha, is_admin) VALUES (?, ?, ?, 1)').run('Admin', adminEmail, hash);
-}
-
-// Seed planos
-const planosCount = db.prepare('SELECT COUNT(*) as c FROM planos').get();
-if (planosCount.c === 0) {
-  const insertPlano = db.prepare('INSERT INTO planos (nome, preco, descricao, recursos) VALUES (?, ?, ?, ?)');
-  insertPlano.run('Simples', 14.90, 'Acesso básico ao catálogo de filmes', JSON.stringify(['Filmes em SD', '1 tela', 'Anúncios']));
-  insertPlano.run('Comum', 29.90, 'Acesso completo e experiência intermediária', JSON.stringify(['Filmes em HD', '2 telas', 'Sem anúncios', 'Download offline']));
-  insertPlano.run('Premium', 49.90, 'Experiência premium com qualidade máxima', JSON.stringify(['Filmes em 4K', '4 telas', 'Sem anúncios', 'Download offline', 'Conteúdo exclusivo', 'Suporte prioritário']));
-}
-
-// Seed sample movies (streaming URLs)
-const filmesCount = db.prepare('SELECT COUNT(*) as c FROM filmes').get();
-if (filmesCount.c === 0) {
-  const insertFilme = db.prepare('INSERT INTO filmes (titulo, descricao, categoria, url, thumbnail_url, duracao, ano) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  const filmes = [
-    ['Oppenheimer', 'A história do físico J. Robert Oppenheimer e seu papel no desenvolvimento da bomba atômica.', 'Drama', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg', 180, 2023],
-    ['Duna: Parte 2', 'Paul Atreides une forças com os Fremen em busca de vingança.', 'Ficção Científica', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg', 166, 2024],
-    ['John Wick 4', 'John Wick enfrenta seus adversários mais letais até agora.', 'Ação', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/vZloFAK7NmvMGKE7VkF5UHaz0I.jpg', 169, 2023],
-    ['Interestelar', 'Astronautas viajam através de um buraco de minhoca em busca de um novo lar.', 'Ficção Científica', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg', 169, 2014],
-    ['Clube da Luta', 'Um homem descontente e um vendedor de sabão formam um clube de luta clandestino.', 'Drama', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg', 139, 1999],
-    ['Matrix', 'Um hacker descobre que a realidade é uma simulação criada por máquinas.', 'Ação', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg', 136, 1999],
-    ['O Cavaleiro das Trevas', 'Batman enfrenta o Coringa, um gênio do crime que mergulha Gotham no caos.', 'Ação', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911B5G9wMEyEIqz.jpg', 152, 2008],
-    ['Pulp Fiction', 'Histórias entrelaçadas de criminosos, boxeadores e bandidos.', 'Crime', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/d5iIlFn5s0ImszYzBPb8JPIfbXD.jpg', 154, 1994],
-    ['Parasita', 'Uma família pobre se infiltra na vida de uma família rica.', 'Drama', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/7IiTTgloJzvGI1TAYymCfbfl3vT.jpg', 132, 2019],
-    ['Vingadores: Ultimato', 'Os heróis restantes se unem para reverter as ações de Thanos.', 'Ação', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/q6725aR8Zs4IwGMXzZT8aC8lh1k.jpg', 181, 2019],
-    ['Forrest Gump', 'Um homem simples testemunha e influencia eventos históricos nos EUA.', 'Drama', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/arw2vcBveWOVZr6pxd9XTd1TdQa.jpg', 142, 1994],
-    ['Mad Max: Estrada da Fúria', 'Em um deserto pós-apocalíptico, Max se une a Furiosa contra um tirano.', 'Ação', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/8tZYTuWezp8JbcsvHYO0O46tFbo.jpg', 120, 2015],
-    ['O Lobo de Wall Street', 'A ascensão e queda de Jordan Belfort no mundo das finanças.', 'Comédia', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'https://image.tmdb.org/t/p/w500/34m2tyKAYnVC6B7541ZY9h7nEl.jpg', 180, 2013],
-  ];
-  const insertMany = db.transaction(() => {
-    for (const f of filmes) {
-      insertFilme.run(...f);
-    }
-  });
-  insertMany();
-}
-
-// Seed categories
-const catCount = db.prepare('SELECT COUNT(*) as c FROM categorias').get();
-if (catCount.c === 0) {
-  const insertCat = db.prepare('INSERT INTO categorias (nome) VALUES (?)');
-  for (const cat of ['Ação', 'Comédia', 'Drama', 'Ficção Científica', 'Terror', 'Crime', 'Romance', 'Documentário']) {
-    insertCat.run(cat);
+function saveToDisk() {
+  if (rawDb) {
+    const data = rawDb.export();
+    fs.writeFileSync(DB_PATH, Buffer.from(data));
   }
 }
 
-module.exports = db;
+function seedDatabase() {
+  const bcrypt = require('bcryptjs');
+
+  // Planos
+  const planosCount = db.prepare('SELECT COUNT(*) as c FROM planos').get();
+  if (!planosCount || planosCount.c === 0) {
+    db.prepare(`INSERT INTO planos (nome, preco, descricao, recursos) VALUES (?,?,?,?)`).run('Simples', 14.90, 'Acesso básico', 'Filmes em HD, 1 tela');
+    db.prepare(`INSERT INTO planos (nome, preco, descricao, recursos) VALUES (?,?,?,?)`).run('Comum', 29.90, 'Acesso intermediário', 'Filmes em Full HD, 2 telas, Download');
+    db.prepare(`INSERT INTO planos (nome, preco, descricao, recursos) VALUES (?,?,?,?)`).run('Premium', 49.90, 'Acesso completo', 'Filmes em 4K, 4 telas, Download, Sem anúncios');
+    console.log('Planos seeded');
+  }
+
+  // Admin
+  const adminExists = db.prepare("SELECT id FROM usuarios WHERE email = ?").get('admin@movieflix.com');
+  if (!adminExists) {
+    const hash = bcrypt.hashSync('admin123', 10);
+    db.prepare('INSERT INTO usuarios (nome, email, senha, is_admin) VALUES (?,?,?,1)').run('Admin', 'admin@movieflix.com', hash);
+    console.log('Admin seeded');
+  }
+
+  // Categorias
+  const catsCount = db.prepare('SELECT COUNT(*) as c FROM categorias').get();
+  if (!catsCount || catsCount.c === 0) {
+    const cats = ['Ação', 'Comédia', 'Drama', 'Ficção Científica', 'Terror', 'Romance', 'Documentário', 'Animação', 'Suspense', 'Aventura'];
+    for (const cat of cats) {
+      db.prepare('INSERT OR IGNORE INTO categorias (nome) VALUES (?)').run(cat);
+    }
+    console.log('Categorias seeded');
+  }
+
+  // Filmes
+  const filmesCount = db.prepare('SELECT COUNT(*) as c FROM filmes').get();
+  if (!filmesCount || filmesCount.c === 0) {
+    const filmes = [
+      ['Oppenheimer', 'A história do físico J. Robert Oppenheimer e a criação da bomba atômica.', 'Drama', 'https://www.youtube.com/watch?v=uYPbbksJxIg', '', 180, 2023],
+      ['Duna 2', 'Paul Atreides une-se aos Fremen para vingar sua família.', 'Ficção Científica', 'https://www.youtube.com/watch?v=Way9Dexny3w', '', 166, 2024],
+      ['Matrix', 'Um hacker descobre que a realidade é uma simulação.', 'Ficção Científica', 'https://www.youtube.com/watch?v=m8e-FF8MsqU', '', 136, 1999],
+      ['Vingadores: Ultimato', 'Os heróis se reúnem para desfazer as ações de Thanos.', 'Ação', 'https://www.youtube.com/watch?v=TcMBFSGVi1c', '', 181, 2019],
+      ['O Poderoso Chefão', 'A saga da família Corleone no mundo do crime.', 'Drama', 'https://www.youtube.com/watch?v=sY1S34973zA', '', 175, 1972],
+      ['Interestelar', 'Astronautas viajam por um buraco de minhoca em busca de um novo lar.', 'Ficção Científica', 'https://www.youtube.com/watch?v=zSWdZVtXT7E', '', 169, 2014],
+      ['Parasita', 'Uma família pobre se infiltra na vida de uma família rica.', 'Suspense', 'https://www.youtube.com/watch?v=5xH0HfJHsaY', '', 132, 2019],
+      ['Toy Story', 'Brinquedos ganham vida quando ninguém está olhando.', 'Animação', 'https://www.youtube.com/watch?v=v-PjgYDrg70', '', 81, 1995],
+      ['O Senhor dos Anéis', 'Um hobbit embarca em uma jornada para destruir um anel mágico.', 'Aventura', 'https://www.youtube.com/watch?v=V75dMMIW2B4', '', 178, 2001],
+      ['Coringa', 'A origem do vilão Coringa em Gotham City.', 'Drama', 'https://www.youtube.com/watch?v=zAGVQLHvwOY', '', 122, 2019],
+      ['Clube da Luta', 'Um homem insone cria um clube de luta clandestino.', 'Drama', 'https://www.youtube.com/watch?v=SUXWAEX2jlg', '', 139, 1999],
+      ['A Origem', 'Um ladrão invade sonhos para plantar ou roubar ideias.', 'Ficção Científica', 'https://www.youtube.com/watch?v=YoHD9XEInc0', '', 148, 2010],
+      ['Forrest Gump', 'A vida extraordinária de um homem simples.', 'Drama', 'https://www.youtube.com/watch?v=bLvqoHBptjg', '', 142, 1994]
+    ];
+    for (const f of filmes) {
+      db.prepare('INSERT INTO filmes (titulo, descricao, categoria, url, thumbnail_url, duracao, ano) VALUES (?,?,?,?,?,?,?)').run(...f);
+    }
+    console.log('Filmes seeded');
+  }
+}
+
+async function initDatabase() {
+  const SQL = await initSqlJs();
+
+  if (fs.existsSync(DB_PATH)) {
+    const buffer = fs.readFileSync(DB_PATH);
+    rawDb = new SQL.Database(buffer);
+  } else {
+    rawDb = new SQL.Database();
+  }
+
+  rawDb.run('PRAGMA journal_mode=WAL');
+  rawDb.run('PRAGMA foreign_keys=ON');
+
+  rawDb.run(`CREATE TABLE IF NOT EXISTS usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, email TEXT UNIQUE NOT NULL, senha TEXT NOT NULL, is_admin INTEGER DEFAULT 0, reset_token TEXT, reset_expira TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`);
+  rawDb.run(`CREATE TABLE IF NOT EXISTS planos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, preco REAL NOT NULL, descricao TEXT, recursos TEXT)`);
+  rawDb.run(`CREATE TABLE IF NOT EXISTS filmes (id INTEGER PRIMARY KEY AUTOINCREMENT, titulo TEXT NOT NULL, descricao TEXT DEFAULT '', categoria TEXT, url TEXT NOT NULL, thumbnail_url TEXT DEFAULT '', duracao INTEGER, ano INTEGER, created_at TEXT DEFAULT (datetime('now','localtime')))`);
+  rawDb.run(`CREATE TABLE IF NOT EXISTS assinaturas (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER NOT NULL, plano_id INTEGER NOT NULL, status TEXT DEFAULT 'pendente', mp_payment_id TEXT, qr_code TEXT, qr_code_base64 TEXT, created_at TEXT DEFAULT (datetime('now','localtime')), FOREIGN KEY (usuario_id) REFERENCES usuarios(id), FOREIGN KEY (plano_id) REFERENCES planos(id))`);
+  rawDb.run(`CREATE TABLE IF NOT EXISTS pagamentos (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER NOT NULL, plano_id INTEGER NOT NULL, valor REAL NOT NULL, status TEXT DEFAULT 'pendente', mp_payment_id TEXT, qr_code TEXT, qr_code_base64 TEXT, created_at TEXT DEFAULT (datetime('now','localtime')), FOREIGN KEY (usuario_id) REFERENCES usuarios(id), FOREIGN KEY (plano_id) REFERENCES planos(id))`);
+  rawDb.run(`CREATE TABLE IF NOT EXISTS categorias (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL UNIQUE)`);
+
+  saveToDisk();
+
+  seedDatabase();
+  console.log('Database ready');
+
+  // Auto-save every 30s
+  setInterval(saveToDisk, 30000);
+
+  return db;
+}
+
+module.exports = { initDatabase, db };
