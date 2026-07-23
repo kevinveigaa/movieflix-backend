@@ -18,7 +18,7 @@ router.post('/cadastro', (req, res) => {
     const hash = bcrypt.hashSync(senha, 10);
     const result = db.prepare('INSERT INTO usuarios (nome, email, senha) VALUES (?, ?, ?)').run(nome, email, hash);
     const token = jwt.sign({ id: result.lastInsertRowid }, JWT_SECRET, { expiresIn: '7d' });
-    res.status(201).json({ token, usuario: { id: result.lastInsertRowid, nome, email, is_admin: 0 } });
+    res.status(201).json({ sucesso: true, token, usuario: { id: result.lastInsertRowid, nome, email, is_admin: 0 } });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -33,7 +33,7 @@ router.post('/login', (req, res) => {
     if (!user) return res.status(401).json({ erro: 'Email ou senha inválidos' });
     if (!bcrypt.compareSync(senhaFinal, user.senha)) return res.status(401).json({ erro: 'Email ou senha inválidos' });
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, usuario: { id: user.id, nome: user.nome, email: user.email, is_admin: user.is_admin } });
+    res.json({ sucesso: true, token, usuario: { id: user.id, nome: user.nome, email: user.email, is_admin: user.is_admin } });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
