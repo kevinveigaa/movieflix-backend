@@ -79,3 +79,8 @@ initDatabase().then(() => {
   console.error('Falha ao iniciar banco:', err);
   process.exit(1);
 });
+
+// DEBUG: echo body for testing
+app.post('/api/debug', (req, res) => {
+  res.json({ body: req.body, headers: req.headers['content-type'] });
+});
