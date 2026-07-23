@@ -88,7 +88,7 @@ router.post('/criar', authRequired, async (req, res) => {
     // Return format the APK expects
     res.json({
       sucesso: true,
-      linkPagamento: `https://www.mercadopago.com.br/checkout/v1/payment?pref_id=${paymentId}`,
+      linkPagamento: `https://movieflix-backend-bsuf.onrender.com/api/pagamentos/qrcode/${paymentId}`,
       pagamento_id: paymentId,
       qr_code: qrCode,
       qr_code_base64: qrCodeBase64,
@@ -182,3 +182,24 @@ router.get('/status', authRequired, async (req, res) => {
 });
 
 module.exports = router;
+
+// GET /api/pagamentos/qrcode/:id — Shows PIX QR code page
+router.get('/qrcode/:id', (req, res) => {
+  try {
+    const payment = db.prepare(
+      'SELECT * FROM pagamentos WHERE mp_payment_id = ?'
+    ).get(req.params.id);
+
+    if (!payment || !payment.qr_code_base64) {
+      return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pagamento - MovieFlix</title><style>body{font-family:system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a1a;color:#fff;text-align:center;padding:20px}h1{color:#e50914}button{background:#e50914;color:#fff;border:0;padding:12px 30px;border-radius:8px;font-size:16px;margin-top:20px;cursor:pointer}</style></head><body><h1>Pagamento não encontrado</h1><p>Tente criar um novo pagamento no app.</p><button onclick="window.ReactNativeWebView.postMessage('close')">Voltar</button></body></html>`);
+    }
+
+    const qrImg = `data:image/png;base64,${payment.qr_code_base64}`;
+    const pixCode = payment.qr_code || '';
+
+    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pagar com PIX - MovieFlix</title><style>body{font-family:system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a1a;color:#fff;text-align:center;padding:20px}h1{color:#e50914;margin-bottom:10px}h2{font-weight:400;color:#aaa;font-size:14px;margin-bottom:20px}.qr-box{background:#fff;padding:15px;border-radius:12px;margin:20px 0}.qr-box img{width:220px;height:220px}button{background:#e50914;color:#fff;border:0;padding:12px 30px;border-radius:8px;font-size:16px;margin:10px;cursor:pointer}.copy-btn{background:#333}.pix-code{background:#1a1a2e;padding:10px;border-radius:6px;word-break:break-all;max-width:300px;font-size:11px;color:#888}</style></head><body><h1>Pagar com PIX</h1><h2>Plano: ${payment.valor ? 'R$' + payment.valor.toFixed(2).replace('.',',') : ''}</h2><div class="qr-box"><img src="${qrImg}" alt="QR Code PIX"></div><p style="font-size:13px;color:#aaa">Escaneie o QR Code ou copie o código PIX</p><p class="pix-code">${pixCode}</p><button onclick="navigator.clipboard.writeText('${pixCode.replace(/'/g,"\\'")}')">📋 Copiar código PIX</button><button onclick="window.ReactNativeWebView.postMessage('paid')">✅ Já paguei</button></body></html>`);
+  } catch (e) {
+    res.status(500).send('Erro ao carregar QR code');
+  }
+});
+
