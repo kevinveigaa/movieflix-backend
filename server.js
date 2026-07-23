@@ -121,3 +121,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Planos: Simples R$14,90 | Comum R$29,90 | Premium R$49,90`);
   console.log(`========================================\n`);
 });
+// trigger redeploy
