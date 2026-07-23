@@ -14,11 +14,11 @@ router.post('/cadastro', (req, res) => {
     if (!nome || !email || !senha) return res.status(400).json({ erro: 'Nome, email e senha são obrigatórios' });
     if (senha.length < 6) return res.status(400).json({ erro: 'Senha deve ter pelo menos 6 caracteres' });
     const existing = db.prepare('SELECT id FROM usuarios WHERE email = ?').get(email);
-    if (existing) return res.status(400).json({ erro: 'Email já cadastrado' });
+    if (existing) return res.status(400).json({ erro: 'Email já cadastrado. Use outro email ou faça login.' });
     const hash = bcrypt.hashSync(senha, 10);
     const result = db.prepare('INSERT INTO usuarios (nome, email, senha) VALUES (?, ?, ?)').run(nome, email, hash);
     const token = jwt.sign({ id: result.lastInsertRowid }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, usuario: { id: result.lastInsertRowid, nome, email, is_admin: 0 } });
+    res.status(201).json({ token, usuario: { id: result.lastInsertRowid, nome, email, is_admin: 0 } });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -45,7 +45,7 @@ router.get('/me', authRequired, (req, res) => {
     const user = db.prepare('SELECT id, nome, email, is_admin, created_at FROM usuarios WHERE id = ?').get(req.user.id);
     if (!user) return res.status(404).json({ erro: 'Usuário não encontrado' });
     const assinatura = db.prepare(`
-      SELECT a.*, p.nome as plano_nome, p.preco as plano_preco, p.descricao as plano_descricao, p.recursos as plano_recursos
+      SELECT a.*, p.nome as plano_nome, p.preco as plano_preco, p.descricao as plano_descricao
       FROM assinaturas a JOIN planos p ON a.plano_id = p.id
       WHERE a.usuario_id = ? AND a.status = 'aprovado'
       ORDER BY a.created_at DESC LIMIT 1
@@ -62,26 +62,27 @@ router.post('/forgot', (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ erro: 'Email é obrigatório' });
     const user = db.prepare('SELECT id FROM usuarios WHERE email = ?').get(email);
-    if (!user) return res.json({ mensagem: 'Se o email existir, um link de redefinição será enviado.', link: null });
+
+    if (!user) {
+      return res.json({
+        mensagem: 'Se o email existir, um link de redefinição será enviado.',
+        link: null,
+        token: null
+      });
+    }
+
     const token = crypto.randomBytes(32).toString('hex');
     const expira = new Date(Date.now() + 3600000).toISOString();
     db.prepare('UPDATE usuarios SET reset_token = ?, reset_expira = ? WHERE id = ?').run(token, expira, user.id);
 
-    const origin = req.get('origin') || req.get('referer')?.split('/api')?.[0] || process.env.FRONTEND_URL || 'https://movieflix-backend-bsuf.onrender.com';
-    const resetUrl = `${origin}/reset-password?token=${token}`;
+    const baseUrl = process.env.FRONTEND_URL || 'https://movieflix-backend-bsuf.onrender.com';
+    const resetUrl = `${baseUrl}/reset-password?token=${token}`;
 
-    console.log('');
-    console.log('═══════════════════════════════════════════════════');
-    console.log('  🔑 RECUPERAÇÃO DE SENHA');
-    console.log(`  📧 Email: ${email}`);
-    console.log(`  🔗 Link:  ${resetUrl}`);
-    console.log(`  ⏰ Expira em: 1 hora`);
-    console.log('═══════════════════════════════════════════════════');
-    console.log('');
+    console.log(`\n🔑 RESET: ${email} → ${resetUrl}\n`);
 
-    // RETURN THE LINK so the app can show it on screen
+    // Include link in message so it appears in the app UI
     res.json({
-      mensagem: 'Link de redefinição gerado com sucesso.',
+      mensagem: `Link de redefinição gerado com sucesso!\n\nAcesse: ${resetUrl}\n\nO link expira em 1 hora.`,
       link: resetUrl,
       token: token
     });
@@ -102,7 +103,7 @@ router.post('/reset', (req, res) => {
     if (!user) return res.status(400).json({ erro: 'Token inválido ou expirado. Solicite um novo link.' });
     const hash = bcrypt.hashSync(senha, 10);
     db.prepare('UPDATE usuarios SET senha = ?, reset_token = NULL, reset_expira = NULL WHERE id = ?').run(hash, user.id);
-    res.json({ mensagem: 'Senha redefinida com sucesso. Faça login com sua nova senha.' });
+    res.json({ mensagem: 'Senha redefinida com sucesso! Faça login com sua nova senha.' });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
