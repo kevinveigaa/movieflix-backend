@@ -46,7 +46,7 @@ router.post('/criar', authRequired, async (req, res) => {
     const { plano } = req.body;
     if (!plano) return res.status(400).json({ erro: 'Plano é obrigatório' });
 
-    const planoData = db.prepare('SELECT * FROM planos WHERE nome = ?').get(plano);
+    const planoData = db.prepare('SELECT * FROM planos WHERE LOWER(nome) = LOWER(?)').get(plano);
     if (!planoData) return res.status(400).json({ erro: 'Plano não encontrado' });
 
     const user = db.prepare('SELECT email, nome, id FROM usuarios WHERE id = ?').get(req.user.id);
