@@ -62,26 +62,29 @@ router.post('/forgot', (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ erro: 'Email é obrigatório' });
     const user = db.prepare('SELECT id FROM usuarios WHERE email = ?').get(email);
-    // Always return success to avoid user enumeration
-    if (!user) return res.json({ mensagem: 'Se o email existir, o link de redefinição será enviado para o console do servidor.' });
+    if (!user) return res.json({ mensagem: 'Se o email existir, um link de redefinição será enviado.', link: null });
     const token = crypto.randomBytes(32).toString('hex');
-    const expira = new Date(Date.now() + 3600000).toISOString(); // 1h expiry
+    const expira = new Date(Date.now() + 3600000).toISOString();
     db.prepare('UPDATE usuarios SET reset_token = ?, reset_expira = ? WHERE id = ?').run(token, expira, user.id);
 
-    // Detect the front-end base URL from the request origin or use env
-    const origin = req.get('origin') || req.get('referer')?.split('/api')?.[0] || process.env.FRONTEND_URL || 'http://localhost:3001';
+    const origin = req.get('origin') || req.get('referer')?.split('/api')?.[0] || process.env.FRONTEND_URL || 'https://movieflix-backend-bsuf.onrender.com';
     const resetUrl = `${origin}/reset-password?token=${token}`;
 
     console.log('');
     console.log('═══════════════════════════════════════════════════');
-    console.log('  🔑 RECUPERAÇÃO DE SENHA (FORGOT PASSWORD)');
+    console.log('  🔑 RECUPERAÇÃO DE SENHA');
     console.log(`  📧 Email: ${email}`);
     console.log(`  🔗 Link:  ${resetUrl}`);
     console.log(`  ⏰ Expira em: 1 hora`);
     console.log('═══════════════════════════════════════════════════');
     console.log('');
 
-    res.json({ mensagem: 'Se o email existir, o link de redefinição foi enviado para o console do servidor.' });
+    // RETURN THE LINK so the app can show it on screen
+    res.json({
+      mensagem: 'Link de redefinição gerado com sucesso.',
+      link: resetUrl,
+      token: token
+    });
   } catch (e) {
     res.status(500).json({ erro: e.message });
   }
@@ -93,7 +96,6 @@ router.post('/reset', (req, res) => {
     const { token, senha } = req.body;
     if (!token || !senha) return res.status(400).json({ erro: 'Token e senha são obrigatórios' });
     if (senha.length < 6) return res.status(400).json({ erro: 'Senha deve ter pelo menos 6 caracteres' });
-    // SQLite datetime compares as strings in ISO format
     const user = db.prepare(
       "SELECT * FROM usuarios WHERE reset_token = ? AND reset_expira > datetime('now','localtime')"
     ).get(token);
